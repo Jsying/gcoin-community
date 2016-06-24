@@ -4,6 +4,7 @@
 
 #include "coins.h"
 
+#include "main.h"
 #include "memusage.h"
 #include "random.h"
 
@@ -41,7 +42,30 @@ bool CCoins::Spend(uint32_t nPos)
     return true;
 }
 
+void CCoins::InitRelatedAddress()
+{
+    mapRelatedAddress.clear();
+    BOOST_FOREACH(CTxOut &txout, vout) {
+        if (!txout.IsNull() && txout.nValue > CAmount(0)) {
+            std::string address = GetDestination(txout.scriptPubKey);
+            mapRelatedAddress[address] = 1;
+        }
+    }
+}
+
+void CCoins::GetCurrentRelatedAddress(std::map<std::string, int> &current) const
+{
+    current.clear();
+    BOOST_FOREACH(const CTxOut &txout, vout) {
+        if (!txout.IsNull() && txout.nValue > CAmount(0)) {
+            std::string address = GetDestination(txout.scriptPubKey);
+            current[address] = 1;
+        }
+    }
+}
+
 bool CCoinsView::GetCoins(const uint256 &txid, CCoins &coins) const { return false; }
+bool CCoinsView::GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const { return false; }
 bool CCoinsView::HaveCoins(const uint256 &txid) const { return false; }
 uint256 CCoinsView::GetBestBlock() const { return uint256(); }
 bool CCoinsView::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) { return false; }
@@ -50,6 +74,7 @@ bool CCoinsView::GetStats(CCoinsStats &stats) const { return false; }
 
 CCoinsViewBacked::CCoinsViewBacked(CCoinsView *viewIn) : base(viewIn) { }
 bool CCoinsViewBacked::GetCoins(const uint256 &txid, CCoins &coins) const { return base->GetCoins(txid, coins); }
+bool CCoinsViewBacked::GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const { return base->GetAddressTx(address, vTxs); }
 bool CCoinsViewBacked::HaveCoins(const uint256 &txid) const { return base->HaveCoins(txid); }
 uint256 CCoinsViewBacked::GetBestBlock() const { return base->GetBestBlock(); }
 void CCoinsViewBacked::SetBackend(CCoinsView &viewIn) { base = &viewIn; }
@@ -95,6 +120,8 @@ bool CCoinsViewCache::GetCoins(const uint256 &txid, CCoins &coins) const {
     }
     return false;
 }
+
+bool CCoinsViewCache::GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const { return base->GetAddressTx(address, vTxs); }
 
 CCoinsModifier CCoinsViewCache::ModifyCoins(const uint256 &txid) {
     assert(!hasModifier);

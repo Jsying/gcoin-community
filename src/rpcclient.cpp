@@ -112,6 +112,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "gettxout", 1 },
     { "gettxout", 2 },
     { "gettxoutproof", 0 },
+    { "getaddressbalancestateless", 1},
     { "lockunspent", 0 },
     { "lockunspent", 1 },
     { "importprivkey", 2 },
@@ -135,7 +136,6 @@ private:
 
 public:
     CRPCConvertTable();
-
     bool convert(const std::string& method, int idx) {
         return (members.count(std::make_pair(method, idx)) > 0);
     }

@@ -9,6 +9,7 @@
 #include "hash.h"
 #include "main.h"
 #include "pow.h"
+#include "serialize.h"
 #include "uint256.h"
 
 #include <stdint.h>
@@ -21,6 +22,7 @@
 using namespace std;
 
 static const char DB_COINS = 'c';
+static const char DB_ADDRESS_COINS = 'a';
 static const char DB_BLOCK_FILES = 'f';
 static const char DB_TXINDEX = 't';
 static const char DB_BLOCK_INDEX = 'b';
@@ -32,10 +34,24 @@ static const char DB_LAST_BLOCK = 'l';
 
 
 void static BatchWriteCoins(CLevelDBBatch &batch, const uint256 &hash, const CCoins &coins) {
-    if (coins.IsPruned())
+    if (coins.IsPruned()) {
         batch.Erase(make_pair(DB_COINS, hash));
-    else
+        for (std::map<std::string, int>::const_iterator it = coins.mapRelatedAddress.begin(); it != coins.mapRelatedAddress.end(); it++) {
+            batch.Erase(make_pair(DB_ADDRESS_COINS, make_pair(it->first, hash)));
+        }
+    }
+    else {
         batch.Write(make_pair(DB_COINS, hash), coins);
+        std::map<std::string, int> currentRelatedAddress;
+        coins.GetCurrentRelatedAddress(currentRelatedAddress);
+        for (std::map<std::string, int>::const_iterator it = coins.mapRelatedAddress.begin(); it != coins.mapRelatedAddress.end(); it++) {
+            if (currentRelatedAddress.count(it->first) > 0) {
+                batch.Write(make_pair(DB_ADDRESS_COINS, make_pair(it->first, hash)), currentRelatedAddress[it->first]);
+            } else {
+                batch.Erase(make_pair(DB_ADDRESS_COINS, make_pair(it->first, hash)));
+            }
+        }
+    }
 }
 
 void static BatchWriteHashBestChain(CLevelDBBatch &batch, const uint256 &hash) {
@@ -48,6 +64,40 @@ CCoinsViewDB::CCoinsViewDB(size_t nCacheSize, bool fMemory, bool fWipe) : db(Get
 
 bool CCoinsViewDB::GetCoins(const uint256 &txid, CCoins &coins) const {
     return db.Read(make_pair(DB_COINS, txid), coins);
+}
+
+bool CCoinsViewDB::GetAddressTx(const string &address, std::vector<uint256> &vTxs) const {
+    vTxs.clear();
+    boost::scoped_ptr<leveldb::Iterator> pcursor(const_cast<CLevelDBWrapper*>(&db)->NewIterator());
+    uint256 zero;
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    std::pair<char, std::pair<std::string, uint256> > key = make_pair(DB_ADDRESS_COINS, make_pair(address, zero));
+    ssKey.reserve(ssKey.GetSerializeSize(key));
+    ssKey << key;
+    leveldb::Slice slKey(&ssKey[0], ssKey.size());
+    pcursor->Seek(slKey);
+    while (pcursor->Valid()) {
+        boost::this_thread::interruption_point();
+        try {
+            leveldb::Slice slKey = pcursor->key();
+            CDataStream ssKey(slKey.data(), slKey.data()+slKey.size(), SER_DISK, CLIENT_VERSION);
+            char chType;
+            std::string addr;
+            uint256 hash;
+            ssKey >> chType;
+            if (chType == DB_ADDRESS_COINS) {
+                ssKey >> addr;
+                if (addr == address) {
+                    ssKey >> hash;
+                    vTxs.push_back(hash);
+                }
+            }
+            pcursor->Next();
+        } catch (const std::exception& e) {
+            return error("%s: Deserialize or I/O error - %s", __func__, e.what());
+        }
+    }
+    return true;
 }
 
 bool CCoinsViewDB::HaveCoins(const uint256 &txid) const {

@@ -80,6 +80,8 @@ public:
     //! unspent transaction outputs; spent outputs are .IsNull(); spent outputs at the end of the array are dropped
     std::vector<CTxOut> vout;
 
+    std::map<std::string, int> mapRelatedAddress;
+
     //! at which height this transaction was included in the active block chain
     int nHeight;
 
@@ -94,6 +96,7 @@ public:
     , type(tx.type)
     {
         ClearUnspendable();
+        InitRelatedAddress();
     }
 
     //! empty constructor
@@ -110,12 +113,14 @@ public:
         nVersion = tx.nVersion;
         type = tx.type;
         ClearUnspendable();
+        InitRelatedAddress();
     }
 
     void Clear()
     {
         fCoinBase = false;
         std::vector<CTxOut>().swap(vout);
+        std::map<std::string, int>().swap(mapRelatedAddress);
         nHeight = 0;
         nVersion = 0;
         type = 0;
@@ -138,10 +143,15 @@ public:
         Cleanup();
     }
 
+    void InitRelatedAddress();
+
+    void GetCurrentRelatedAddress(std::map<std::string, int> &current) const;
+
     void swap(CCoins &to)
     {
         std::swap(to.fCoinBase, fCoinBase);
         to.vout.swap(vout);
+        to.mapRelatedAddress.swap(mapRelatedAddress);
         std::swap(to.nHeight, nHeight);
         std::swap(to.nVersion, nVersion);
         std::swap(to.type, type);
@@ -263,6 +273,7 @@ public:
         // coinbase type
         ::Unserialize(s, VARINT(type), nType, nVersion);
         Cleanup();
+        InitRelatedAddress();
     }
 
     //! mark a vout spent
@@ -284,6 +295,7 @@ public:
 
     size_t DynamicMemoryUsage() const {
         size_t ret = memusage::DynamicUsage(vout);
+        ret = memusage::DynamicUsage(mapRelatedAddress);
         BOOST_FOREACH(const CTxOut &out, vout) {
             const std::vector<unsigned char> *script = &out.scriptPubKey;
             ret += memusage::DynamicUsage(*script);
@@ -346,6 +358,8 @@ public:
     //! Retrieve the CCoins (unspent transaction outputs) for a given txid
     virtual bool GetCoins(const uint256 &txid, CCoins &coins) const;
 
+    virtual bool GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const;
+
     //! Just check whether we have data for a given txid.
     //! This may (but cannot always) return true for fully spent transactions
     virtual bool HaveCoins(const uint256 &txid) const;
@@ -374,6 +388,7 @@ protected:
 public:
     CCoinsViewBacked(CCoinsView *viewIn);
     bool GetCoins(const uint256 &txid, CCoins &coins) const;
+    bool GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const;
     bool HaveCoins(const uint256 &txid) const;
     uint256 GetBestBlock() const;
     void SetBackend(CCoinsView &viewIn);
@@ -428,6 +443,7 @@ public:
 
     // Standard CCoinsView methods
     bool GetCoins(const uint256 &txid, CCoins &coins) const;
+    bool GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const;
     bool HaveCoins(const uint256 &txid) const;
     uint256 GetBestBlock() const;
     void SetBestBlock(const uint256 &hashBlock);

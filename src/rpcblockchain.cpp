@@ -4,6 +4,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "base58.h"
 #include "checkpoints.h"
 #include "consensus/validation.h"
 #include "main.h"
@@ -533,6 +534,54 @@ Value gettxout(const Array& params, bool fHelp)
 
     return ret;
 }
+
+Value getaddressbalancestateless(const Array &params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw std::runtime_error(
+            _(__func__) + "\n"
+            "\n help"
+        );
+
+    LOCK(cs_main);
+
+    map<type_Color, CAmount> color_amount;
+    string strAddress = params[0].get_str();
+    CBitcoinAddress address(strAddress);
+
+    if (!address.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Bitcoin address");
+
+    FlushStateToDisk();
+    vector<uint256> vTxs;
+    if (!pcoinsTip->GetAddressTx(address.ToString(), vTxs)) {
+        return Value::null;
+    }
+
+    for (vector<uint256>::iterator it = vTxs.begin(); it != vTxs.end(); ++it) {
+        const CCoins *coins = pcoinsTip->AccessCoins(*it);
+        if (coins != NULL) {
+            if (coins->IsCoinBase()) {
+                std::map<std::string, int> currentRelatedAddress;
+                coins->GetCurrentRelatedAddress(currentRelatedAddress);
+            }
+            for(unsigned int i = 0; i < coins->vout.size(); ++i) {
+                const CTxOut &out = coins->vout[i];
+                if(!out.IsNull() && strAddress == GetDestination(out.scriptPubKey) && out.nValue != 0) {
+                    map<type_Color, CAmount>::iterator iter_ca = color_amount.find(out.color);
+                    if (iter_ca == color_amount.end()) {
+                        color_amount[out.color] = out.nValue;
+                    } else {
+                        color_amount[out.color] = iter_ca->second + out.nValue;
+                    }
+                }
+            }
+        }
+    }
+
+    return ValueFromAmount(color_amount);
+}
+
 
 Value verifychain(const Array& params, bool fHelp)
 {
