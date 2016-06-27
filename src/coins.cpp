@@ -7,8 +7,18 @@
 #include "main.h"
 #include "memusage.h"
 #include "random.h"
+#include "utilmoneystr.h"
 
 #include <assert.h>
+
+struct CompareValueOnly
+{
+    bool operator()(const pair<CAmount, const CTxOutput> &t1,
+                    const pair<CAmount, const CTxOutput> &t2) const
+    {
+        return t1.first < t2.first;
+    }
+};
 
 /**
  * calculate number of bytes for the bitmask, and its number of non-zero bytes
@@ -62,6 +72,20 @@ void CCoins::GetCurrentRelatedAddress(std::map<std::string, int> &current) const
             current[address] = 1;
         }
     }
+}
+
+int CCoins::GetBlocksToMaturity(const int &type) const
+{
+    if (type != LICENSE && !IsCoinBase())
+        return 0;
+    int MATURITY = type == LICENSE? LICENSE_MATURITY: COINBASE_MATURITY;
+    return max(0, (MATURITY+1) - GetDepthInMainChain());
+}
+
+int CCoins::GetDepthInMainChain() const
+{
+    AssertLockHeld(cs_main);
+    return chainActive.Height() - nHeight + 1;
 }
 
 bool CCoinsView::GetCoins(const uint256 &txid, CCoins &coins) const { return false; }
@@ -122,6 +146,172 @@ bool CCoinsViewCache::GetCoins(const uint256 &txid, CCoins &coins) const {
 }
 
 bool CCoinsViewCache::GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const { return base->GetAddressTx(address, vTxs); }
+
+void CCoinsViewCache::AvailableCoins(std::vector<CTxOutput>& vCoins, const type_Color& color, const std::string& strFromAddress) const {
+    vCoins.clear();
+    {
+        LOCK(cs_main);
+        std::vector<uint256> vTxs;
+        if (!GetAddressTx(strFromAddress, vTxs)) {
+            return;
+        }
+        for (vector<uint256>::iterator it = vTxs.begin(); it != vTxs.end(); ++it) {
+            const CCoins *coins = pcoinsTip->AccessCoins(*it);
+            if (coins != NULL) {
+
+                if (coins->IsCoinBase() && coins->GetBlocksToMaturity() > 0)
+                    continue;
+
+                if (!(coins->type == NORMAL || coins->type == MINT || coins->type == MATCH || coins->type == CANCEL || coins->type == ORDER))
+                    continue;
+
+                int nDepth = coins->GetDepthInMainChain();
+                if (nDepth < 0)
+                    continue;
+
+                for(int i = 0; i < coins->vout.size(); ++i) {
+                    const CTxOut &out = coins->vout[i];
+                    if (out.IsNull() || out.color != color || out.nValue < CAmount(0) || strFromAddress != GetDestination(out.scriptPubKey))
+                        continue;
+                    vCoins.push_back(CTxOutput(*it, coins->vout[i], i, nDepth, true));
+                }
+            }
+
+        }
+    }
+}
+
+static void ApproximateBestSubset(std::vector<pair<CAmount, CTxOutput> > vValue, const CAmount& nTotalLower, const CAmount& nTargetValue,
+                                  vector<char>& vfBest, CAmount& nBest, int iterations = 1000)
+{
+    vector<char> vfIncluded;
+
+    vfBest.assign(vValue.size(), true);
+    nBest = nTotalLower;
+
+    seed_insecure_rand();
+
+    for (int nRep = 0; nRep < iterations && nBest != nTargetValue; nRep++) {
+        vfIncluded.assign(vValue.size(), false);
+        CAmount nTotal = 0;
+        bool fReachedTarget = false;
+        for (int nPass = 0; nPass < 2 && !fReachedTarget; nPass++) {
+            for (unsigned int i = 0; i < vValue.size(); i++) {
+                //The solver here uses a randomized algorithm,
+                //the randomness serves no real security purpose but is just
+                //needed to prevent degenerate behavior and it is important
+                //that the rng fast. We do not use a constant random sequence,
+                //because there may be some privacy improvement by making
+                //the selection random.
+                if (nPass == 0 ? insecure_rand() & 1 : !vfIncluded[i]) {
+                    nTotal += vValue[i].first;
+                    vfIncluded[i] = true;
+                    if (nTotal >= nTargetValue) {
+                        fReachedTarget = true;
+                        if (nTotal < nBest) {
+                            nBest = nTotal;
+                            vfBest = vfIncluded;
+                        }
+                        nTotal -= vValue[i].first;
+                        vfIncluded[i] = false;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static bool SelectCoinsMinConf(const CAmount& nTargetValue, int nConf, std::vector<CTxOutput> vCoins,
+                               std::set<CTxOutput>& setCoinsRet, CAmount& nValueRet)
+{
+    setCoinsRet.clear();
+    nValueRet = 0;
+
+    // List of values less than target
+    pair<CAmount, CTxOutput> coinLowestLarger;
+    coinLowestLarger.first = std::numeric_limits<CAmount>::max();
+    coinLowestLarger.second = CTxOutput();
+    vector<pair<CAmount, CTxOutput> > vValue;
+    CAmount nTotalLower = 0;
+
+    random_shuffle(vCoins.begin(), vCoins.end(), GetRandInt);
+
+    BOOST_FOREACH(const CTxOutput &output, vCoins) {
+
+        if (output.nDepth < nConf)
+            continue;
+
+        int i = output.i;
+        CAmount n = output.vout.nValue;
+
+        pair<CAmount, CTxOutput> coin = make_pair(n, output);
+
+        if (n == nTargetValue) {
+            setCoinsRet.insert(coin.second);
+            nValueRet += coin.first;
+            return true;
+        } else if (n < nTargetValue + CENT) {
+            vValue.push_back(coin);
+            nTotalLower += n;
+        } else if (n < coinLowestLarger.first) {
+            coinLowestLarger = coin;
+        }
+    }
+
+    if (nTotalLower == nTargetValue) {
+        for (unsigned int i = 0; i < vValue.size(); ++i) {
+            setCoinsRet.insert(vValue[i].second);
+            nValueRet += vValue[i].first;
+        }
+        return true;
+    }
+
+    if (nTotalLower < nTargetValue) {
+        if (coinLowestLarger.second.vout == CTxOut())
+            return false;
+        setCoinsRet.insert(coinLowestLarger.second);
+        nValueRet += coinLowestLarger.first;
+        return true;
+    }
+
+    // Solve subset sum by stochastic approximation
+    sort(vValue.rbegin(), vValue.rend(), CompareValueOnly());
+    vector<char> vfBest;
+    CAmount nBest;
+
+    ApproximateBestSubset(vValue, nTotalLower, nTargetValue, vfBest, nBest, 1000);
+    if (nBest != nTargetValue && nTotalLower >= nTargetValue + CENT)
+        ApproximateBestSubset(vValue, nTotalLower, nTargetValue + CENT, vfBest, nBest, 1000);
+
+    // If we have a bigger coin and (either the stochastic approximation didn't find a good solution,
+    //                                   or the next bigger coin is closer), return the bigger coin
+    if (coinLowestLarger.second.vout != CTxOut() &&
+        ((nBest != nTargetValue && nBest < nTargetValue + CENT) || coinLowestLarger.first <= nBest)) {
+        setCoinsRet.insert(coinLowestLarger.second);
+        nValueRet += coinLowestLarger.first;
+    } else {
+        for (unsigned int i = 0; i < vValue.size(); i++)
+            if (vfBest[i]) {
+                setCoinsRet.insert(vValue[i].second);
+                nValueRet += vValue[i].first;
+            }
+
+        LogPrint("selectcoins", "SelectCoins() best subset: ");
+        for (unsigned int i = 0; i < vValue.size(); i++)
+            if (vfBest[i])
+                LogPrint("selectcoins", "%s ", FormatMoney(vValue[i].first));
+        LogPrint("selectcoins", "total %s\n", FormatMoney(nBest));
+    }
+
+    return true;
+}
+
+bool SelectCoins(std::vector<CTxOutput> &vCoins, const CAmount& nTargetValue, std::set<CTxOutput> &setCoinsRet,
+                 CAmount& nValueRet)
+{
+    return (SelectCoinsMinConf(nTargetValue, 6, vCoins, setCoinsRet, nValueRet) ||
+            SelectCoinsMinConf(nTargetValue, 1, vCoins, setCoinsRet, nValueRet));
+}
 
 CCoinsModifier CCoinsViewCache::ModifyCoins(const uint256 &txid) {
     assert(!hasModifier);

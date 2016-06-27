@@ -314,5 +314,40 @@ struct CMutableTransaction
     uint256 GetHash() const;
 };
 
-#endif // BITCOIN_PRIMITIVES_TRANSACTION_H
+class CTxOutput
+{
+public:
+    uint256 hash;
+    CTxOut vout;
+    int i;
+    int nDepth;
+    bool fSpendable;
 
+    CTxOutput() {
+        SetNull();
+    }
+
+    CTxOutput(uint256 hashIn, CTxOut voutIn, int iIn, int nDepthIn, bool fSpendableIn)
+    {
+        hash = hashIn; vout = voutIn; i = iIn; nDepth = nDepthIn; fSpendable = fSpendableIn;
+    }
+
+    void SetNull() {
+        hash.SetNull();
+        vout.SetNull();
+        i = 0;
+        nDepth = 0;
+        fSpendable = false;
+    }
+
+    friend bool operator<(const CTxOutput &a, const CTxOutput &b) {
+        if (a.hash == b.hash)
+            return a.i < b.i;
+        return a.hash < b.hash;
+    }
+
+    std::string ToString() const { return vout.ToString();};
+};
+
+
+#endif // BITCOIN_PRIMITIVES_TRANSACTION_H

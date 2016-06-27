@@ -19,6 +19,7 @@
 #include "script/sign.h"
 #include "script/standard.h"
 #include "uint256.h"
+#include "util.h"
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
 #endif
@@ -445,6 +446,134 @@ Value createrawtransaction(const Array& params, bool fHelp)
 
         CTxOut out(nAmount, scriptPubKey, color);
         rawTx.vout.push_back(out);
+    }
+
+    return EncodeHexTx(rawTx);
+}
+
+Value createrawtransactionstateless(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 4 || params.size() > 5)
+        throw std::runtime_error(
+            "createrawtransactionstateless \"fromaddress\" \"tobitcoinaddress\" amount color (\"feeaddress\")\n"
+            "\nCreate a sendfrom transaction without signing\n"
+            "Returns hex-encoded raw transaction.\n"
+            "Note that the transaction's inputs are not signed, and\n"
+            "it is not stored in the wallet or transmitted to the network.\n"
+
+            "\nArguments:\n"
+            "1. \"fromaddress\"       (string, required) The bitcoin address to send funds from.\n"
+            "2. \"tobitcoinaddress\"  (string, required) The bitcoin address to send funds to.\n"
+            "3. amount                (numeric, required) The amount in btc. (transaction fee is added on top).\n"
+            "4. color                 (numeric, required) The currency type (color) of the coin.\n"
+            "5. \"feeaddress\"        (string, optional) The bitcoin address to send fees from.\n"
+            "\nResult:\n"
+            "\"transaction\"            (string) hex string of the transaction\n"
+
+            "\nExamples:\n"
+            "\nSend 2 btc color 1 from the address to the address, must have at least 1 confirmation\n"
+            + HelpExampleCli("createrawtransactionstateless", "\"3O89Awopq5POaUAXq2q1IjiASC71Zzzzsa\" \"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\" 2 1 \"16LioCHQ5zXxSK3bkZSNzMFAWHixay2KQ5\"") +
+            "\nAs a json rpc call\n"
+            + HelpExampleRpc("createrawtransactionstateless", "\"3O89Awopq5POaUAXq2q1IjiASC71Zzzzsa\", \"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\", 2, 1, \"16LioCHQ5zXxSK3bkZSNzMFAWHixay2KQ5\"")
+        );
+
+    LOCK(cs_main);
+    //RPCTypeCheck(params, boost::assign::list_of(str_type)(str_type)(real_type)(int_type)(str_type), true);
+
+    string strFromAddress = params[0].get_str();
+    CBitcoinAddress fromaddress(strFromAddress);
+
+    CBitcoinAddress address(params[1].get_str());
+
+    if (!fromaddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid From-Bitcoin address");
+    if (!address.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid To-Bitcoin address");
+
+    CAmount nAmount = AmountFromValue(params[2]);
+    const type_Color color = ColorFromValue(params[3]);
+
+    CBitcoinAddress feeaddress;
+    if (params.size() < 4) {
+        string feeFromAddress = params[4].get_str();
+        feeaddress.SetString(feeFromAddress);
+    } else {
+        feeaddress.SetString(strFromAddress);
+    }
+
+    if (!feeaddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Fee-Bitcoin address");
+
+    LogPrintf("From address: %s\n", fromaddress.ToString());
+    LogPrintf("To address: %s\n", address.ToString());
+    LogPrintf("Fee address: %s\n", feeaddress.ToString());
+    LogPrintf("Color: %d\n", color);
+    LogPrintf("Amount: %f\n", nAmount);
+
+    CMutableTransaction rawTx;
+
+    rawTx.type = NORMAL;
+
+    std::vector<CTxOutput> vCoins, vCoinsForFee;
+    std::set<CTxOutput> setCoins, setCoinsForFee;
+
+    bool fsameColor = color == TxFee.GetColor();
+    CAmount nAmountTotal = nAmount;
+    CAmount nAmountFee = TxFee.GetFee();
+    if (fsameColor && fromaddress == feeaddress) {
+        nAmountTotal += nAmountFee;
+        nAmountFee = CAmount(0);
+    }
+
+    pcoinsTip->AvailableCoins(vCoins, color, strFromAddress);
+
+    CAmount nValueIn = 0;
+
+    if (!SelectCoins(vCoins, nAmountTotal, setCoins, nValueIn)) {
+        // fail
+        LogPrintf("Select Coins Fail");
+        return Value::null;
+    }
+
+    // fill vin
+    for(std::set<CTxOutput>::iterator it = setCoins.begin(); it != setCoins.end(); ++it) {
+        CTxIn in(COutPoint(it->hash, it->i));
+        rawTx.vin.push_back(in);
+    }
+
+    CScript scriptPubKey = GetScriptForDestination(address.Get());
+    CTxOut out(nAmount, scriptPubKey, color);
+    rawTx.vout.push_back(out);
+
+    CAmount nChange = nValueIn - nAmountTotal;
+
+    if (nChange > CAmount(0)) {
+        CScript scriptPubKeyForChange = GetScriptForDestination(fromaddress.Get());
+        CTxOut outForChange(nChange, scriptPubKeyForChange, color);
+        rawTx.vout.push_back(outForChange);
+    }
+
+    if (nAmountFee > CAmount(0)) {
+        CAmount nValueFeeIn = 0;
+        pcoinsTip->AvailableCoins(vCoinsForFee, TxFee.GetColor(), feeaddress.ToString());
+        if (!SelectCoins(vCoinsForFee, nAmountFee, setCoinsForFee, nValueFeeIn)) {
+            // fail
+            LogPrintf("Select Coins for fee Fail");
+            return Value::null;
+        }
+
+       for(std::set<CTxOutput>::iterator it = setCoinsForFee.begin(); it != setCoinsForFee.end(); ++it) {
+           CTxIn in(COutPoint(it->hash, it->i));
+           rawTx.vin.push_back(in);
+       }
+
+        CAmount nChangeForFee = nValueFeeIn - nAmountFee;
+
+        if (nChangeForFee > CAmount(0)) {
+            CScript scriptPubKeyForFeeChange = GetScriptForDestination(feeaddress.Get());
+            CTxOut outForFeeChange(nChangeForFee, scriptPubKeyForFeeChange, TxFee.GetColor());
+            rawTx.vout.push_back(outForFeeChange);
+        }
     }
 
     return EncodeHexTx(rawTx);

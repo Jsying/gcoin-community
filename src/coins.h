@@ -147,6 +147,10 @@ public:
 
     void GetCurrentRelatedAddress(std::map<std::string, int> &current) const;
 
+    int GetBlocksToMaturity(const int &type = NORMAL) const;
+
+    int GetDepthInMainChain() const;
+
     void swap(CCoins &to)
     {
         std::swap(to.fCoinBase, fCoinBase);
@@ -444,6 +448,7 @@ public:
     // Standard CCoinsView methods
     bool GetCoins(const uint256 &txid, CCoins &coins) const;
     bool GetAddressTx(const std::string &address, std::vector<uint256> &vTxs) const;
+    void AvailableCoins(std::vector<CTxOutput>& vCoins, const type_Color& color, const std::string& strFromAddress) const;
     bool HaveCoins(const uint256 &txid) const;
     uint256 GetBestBlock() const;
     void SetBestBlock(const uint256 &hashBlock);
@@ -505,5 +510,8 @@ private:
      */
     CCoinsViewCache(const CCoinsViewCache &);
 };
+
+bool SelectCoins(std::vector<CTxOutput> &vCoins, const CAmount& nTargetValue, std::set<CTxOutput> &setCoinsRet,
+                 CAmount &nValueRet);
 
 #endif // BITCOIN_COINS_H
