@@ -335,6 +335,86 @@ Value listunspent(const Array& params, bool fHelp)
     return results;
 }
 
+Value listunspentstateless(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 4)
+        throw std::runtime_error(
+        _(__func__) + " ( minconf maxconf  [\"address\",...] )\n"
+        "\nReturns array of unspent transaction outputs\n"
+        "with between minconf and maxconf (inclusive) confirmations.\n"
+        "Optionally filter to only include txouts paid to specified addresses.\n"
+        "Results are an array of Objects, each of which has:\n"
+        "{txid, vout, scriptPubKey, amount, confirmations}\n"
+        "\nArguments:\n"
+        "1. minconf          (numeric, optional, default=1) The minimum confirmationsi to filter\n"                "2. maxconf          (numeric, optional, default=9999999) The maximum confirmations to filter\n"
+        "3. \"addresses\"    (string) A json array of gcoin addresses to filter\n"
+        "    [\n"
+        "      \"address\"   (string) gcoin address\n"
+        "      ,...\n"
+        "    ]\n"
+        "4. color          (numeric, optional) If specified, looks for UTXOs with this color\n"
+        "\nResult\n"
+        "[                   (array of json object)\n"
+        "  {\n"
+        "    \"txid\" : \"txid\",        (string) the transaction id \n"
+        "    \"vout\" : n,               (numeric) the vout value\n"
+        "    \"address\" : \"address\",  (string) the gcoin address\n"
+        "    \"account\" : \"account\",  (string) The associated account, or \"\" for the default account\n"
+        "    \"scriptPubKey\" : \"key\", (string) the script key\n"
+        "    \"amount\" : x.xxx,         (numeric) the transaction amount in btc\n"
+        "    \"color\" : color_type      (numeric) The currency type (color) of the transaction\n"
+        "    \"confirmations\" : n       (numeric) The number of confirmations\n"
+        "  }\n"
+        "  ,...\n"
+        "]\n"
+
+        "\nExamples\n"
+        + HelpExampleCli(__func__, "")
+        + HelpExampleCli(__func__, "6 9999999 \"[\\\"1PGFqEzfmQch1gKD3ra4k18PNj3tTUUSqg\\\",\\\"1LtvqCaApEdUGFkpKMM4MstjcaL4dKg8SP\\\"]\"")
+        + HelpExampleRpc(__func__, "6, 9999999 \"[\\\"1PGFqEzfmQch1gKD3ra4k18PNj3tTUUSqg\\\",\\\"1LtvqCaApEdUGFkpKMM4MstjcaL4dKg8SP\\\"]\"")
+        + HelpExampleRpc(__func__, "6, 9999999 \"[\\\"1PGFqEzfmQch1gKD3ra4k18PNj3tTUUSqg\\\",\\\"1LtvqCaApEdUGFkpKMM4MstjcaL4dKg8SP\\\"]\" 1")
+        );
+
+    RPCTypeCheck(params, boost::assign::list_of(str_type)(int_type)(int_type)(int_type));
+
+    std::string strAddress = params[0].get_str();
+    CBitcoinAddress address(strAddress);
+
+    type_Color color = ColorFromValue(params[1]);
+
+    int nMinDepth = 1;
+    if (params.size() > 2)
+        nMinDepth = params[2].get_int();
+
+    int nMaxDepth = 9999999;
+    if (params.size() > 3)
+        nMaxDepth = params[3].get_int();
+
+    Array results;
+    std::vector<CTxOutput> vCoins;
+
+    FlushStateToDisk();
+    pcoinsTip->AvailableCoins(vCoins, color, strAddress);
+
+    BOOST_FOREACH(CTxOutput &out, vCoins) {
+        if (out.nDepth < nMinDepth || out.nDepth > nMaxDepth)
+            continue;
+
+        const CScript& pk = out.vout.scriptPubKey;
+        Object entry;
+        entry.push_back(Pair("txid", out.hash.ToString()));
+        entry.push_back(Pair("vout", out.i));
+        entry.push_back(Pair("address", address.ToString()));
+        entry.push_back(Pair("scriptPubKey", HexStr(pk.begin(), pk.end())));
+        entry.push_back(Pair("amount", ValueFromAmount(out.vout.nValue)));
+        entry.push_back(Pair("color", (int64_t)out.vout.color));
+        entry.push_back(Pair("confirmations", out.nDepth));
+        results.push_back(entry);
+    }
+
+    return results;
+}
+
 Value verifytxoutproof(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 1)
